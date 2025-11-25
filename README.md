@@ -158,7 +158,6 @@ Options:
 
 ## Credits
 
-- Shortcut ID calculation based on [Stack Overflow answer](https://stackoverflow.com/a/67406750) by kirksaunders (CC BY-SA 4.0)
 - Artwork provided by [SteamGridDB](https://www.steamgriddb.com)
 - Project created using Claude Sonnet 4.5
 

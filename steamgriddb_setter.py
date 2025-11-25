@@ -6,309 +6,291 @@ Sets custom artwork for non-Steam games using SteamGridDB API
 
 import sys
 import re
+import json
 import requests
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple, Optional
 import argparse
 
 
-class SteamGridDBAPI:
-    """Handles all SteamGridDB API interactions"""
+class Config:
+    """Configuration manager"""
+    
+    DEFAULT_CONFIG = {
+        "api_key": "",
+        "image_types": {
+            "grid": True,
+            "hero": True,
+            "logo": True,
+            "wide": True
+        }
+    }
+    
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
+        self.data = self.load()
+    
+    def load(self) -> dict:
+        """Load configuration from file"""
+        if self.config_path.exists():
+            try:
+                with open(self.config_path) as f:
+                    return {**self.DEFAULT_CONFIG, **json.load(f)}
+            except Exception as e:
+                print(f"Warning: Could not load config: {e}")
+        return self.DEFAULT_CONFIG.copy()
+    
+    def save(self):
+        """Save configuration to file"""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_path, 'w') as f:
+            json.dump(self.data, f, indent=2)
+    
+    def get(self, key: str, default=None):
+        """Get configuration value"""
+        return self.data.get(key, default)
+    
+    def set(self, key: str, value):
+        """Set configuration value"""
+        self.data[key] = value
+
+
+class SteamGridDB:
+    """SteamGridDB API client"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://www.steamgriddb.com/api/v2"
         self.headers = {"Authorization": f"Bearer {api_key}"}
-        
-    def search_game(self, game_name: str) -> Optional[int]:
+    
+    def search(self, game_name: str) -> Optional[int]:
         """Search for a game and return its ID"""
-        url = f"{self.base_url}/search/autocomplete/{game_name}"
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(
+                f"{self.base_url}/search/autocomplete/{game_name}",
+                headers=self.headers
+            )
             response.raise_for_status()
             data = response.json()
-            
-            if data.get("success") and data.get("data"):
-                return data["data"][0]["id"]
+            return data["data"][0]["id"] if data.get("success") and data.get("data") else None
         except Exception as e:
-            print(f"      Error searching: {e}")
-        return None
+            print(f"      Search error: {e}")
+            return None
     
-    def get_grid_image(self, game_id: int) -> Optional[str]:
-        """Get grid image URL for a game"""
-        url = f"{self.base_url}/grids/game/{game_id}"
+    def get_artwork(self, game_id: int, art_type: str) -> Optional[str]:
+        """Get artwork URL for a game (grid, heroes, or logos)"""
         try:
-            response = requests.get(url, headers=self.headers)
+            response = requests.get(
+                f"{self.base_url}/{art_type}/game/{game_id}",
+                headers=self.headers
+            )
             response.raise_for_status()
             data = response.json()
-            
-            if data.get("success") and data.get("data"):
-                return data["data"][0]["url"]
-        except Exception as e:
-            print(f"      Error getting grid: {e}")
-        return None
+            return data["data"][0]["url"] if data.get("success") and data.get("data") else None
+        except:
+            return None
     
-    def get_hero_image(self, game_id: int) -> Optional[str]:
-        """Get hero/header image URL for a game"""
-        url = f"{self.base_url}/heroes/game/{game_id}"
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get("success") and data.get("data"):
-                return data["data"][0]["url"]
-        except Exception as e:
-            print(f"      Error getting hero: {e}")
-        return None
-    
-    def get_logo_image(self, game_id: int) -> Optional[str]:
-        """Get logo image URL for a game"""
-        url = f"{self.base_url}/logos/game/{game_id}"
-        try:
-            response = requests.get(url, headers=self.headers)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get("success") and data.get("data"):
-                return data["data"][0]["url"]
-        except Exception as e:
-            print(f"      Error getting logo: {e}")
-        return None
-    
-    def download_image(self, url: str, output_path: Path) -> bool:
-        """Download an image from URL to the specified path"""
+    def download(self, url: str, output_path: Path) -> bool:
+        """Download an image from URL"""
         try:
             response = requests.get(url, stream=True)
             response.raise_for_status()
-            
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             return True
         except Exception as e:
-            print(f"      Error downloading: {e}")
+            print(f"      Download error: {e}")
             return False
 
 
-class SteamShortcutManager:
-    """Manages Steam shortcuts and grid artwork"""
+class SteamManager:
+    """Steam shortcuts manager"""
     
     def __init__(self, steam_path: Optional[Path] = None):
-        self.steam_path = steam_path or self.find_steam_path()
+        self.steam_path = steam_path or self._find_steam_path()
         if not self.steam_path:
             raise ValueError("Steam installation not found")
-        
-    def find_steam_path(self) -> Optional[Path]:
+    
+    def _find_steam_path(self) -> Optional[Path]:
         """Find Steam installation path on Linux"""
-        possible_paths = [
+        for path in [
             Path.home() / ".steam" / "steam",
             Path.home() / ".local" / "share" / "Steam",
-            Path("/usr/share/steam"),
-        ]
-        
-        for path in possible_paths:
+        ]:
             if path.exists():
                 return path
         return None
     
-    def find_user_dirs(self) -> List[Path]:
+    def get_user_dirs(self) -> List[Path]:
         """Find all Steam user directories"""
-        userdata_path = self.steam_path / "userdata"
-        if not userdata_path.exists():
-            return []
-        
-        return [d for d in userdata_path.iterdir() if d.is_dir() and d.name.isdigit()]
+        userdata = self.steam_path / "userdata"
+        return [d for d in userdata.iterdir() if d.is_dir() and d.name.isdigit()] if userdata.exists() else []
     
-    def get_non_steam_games(self, user_dir: Path) -> List[Tuple[str, str, int, int]]:
+    def get_shortcuts(self, user_dir: Path) -> List[Tuple[str, str, int]]:
         """
-        Extract non-Steam game information from shortcuts.vdf
-        Returns: List of (name, exe, app_id, grid_id) tuples
-        
-        Based on: https://stackoverflow.com/a/67406750
-        Posted by kirksaunders, modified by community
-        Retrieved 2024-11-24, License - CC BY-SA 4.0
+        Extract non-Steam games from shortcuts.vdf
+        Returns: List of (name, exe, app_id) tuples
         """
-        shortcut_path = user_dir / "config" / "shortcuts.vdf"
-        if not shortcut_path.is_file():
+        shortcuts_path = user_dir / "config" / "shortcuts.vdf"
+        if not shortcuts_path.is_file():
             return []
         
         try:
-            shortcut_bytes = shortcut_path.read_bytes()
-            
-            # Regex pattern to extract shortcut information from binary VDF
-            game_pattern = re.compile(
+            shortcuts_bytes = shortcuts_path.read_bytes()
+            pattern = re.compile(
                 rb"\x00\x02appid\x00(.{4})\x01appname\x00([^\x08]+?)\x00\x01exe\x00([^\x08]+?)\x00\x01.+?\x00tags\x00(?:\x01([^\x08]+?)|)\x08\x08",
                 flags=re.DOTALL | re.IGNORECASE
             )
             
             games = []
-            for game_match in game_pattern.findall(shortcut_bytes):
-                # Extract app ID (4-byte little-endian unsigned integer)
-                app_id = int.from_bytes(game_match[0], byteorder='little', signed=False)
-                name = game_match[1].decode('utf-8')
-                exe = game_match[2].decode('utf-8')
-                
-                # Calculate grid ID: (app_id << 32) | 0x02000000
-                grid_id = (app_id << 32) | 0x02000000
-                
-                games.append((name, exe, app_id, grid_id))
+            for match in pattern.findall(shortcuts_bytes):
+                app_id = int.from_bytes(match[0], byteorder='little', signed=False)
+                name = match[1].decode('utf-8')
+                exe = match[2].decode('utf-8')
+                games.append((name, exe, app_id))
             
             return games
-            
         except Exception as e:
             print(f"  Error reading shortcuts: {e}")
             return []
 
 
+def setup_config(config_path: Path) -> Config:
+    """Interactive configuration setup"""
+    config = Config(config_path)
+    
+    if not config.get("api_key"):
+        print("First time setup - please provide your configuration:\n")
+        api_key = input("SteamGridDB API key (from https://www.steamgriddb.com/profile/preferences/api): ").strip()
+        if api_key:
+            config.set("api_key", api_key)
+            config.save()
+            print(f"\n✓ Configuration saved to {config_path}")
+        else:
+            print("\nError: API key is required")
+            sys.exit(1)
+    
+    return config
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Set SteamGridDB artwork for Steam shortcuts",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Set artwork for all non-Steam games
-  %(prog)s --api-key YOUR_KEY
-  
-  # List shortcuts without downloading
-  %(prog)s --api-key YOUR_KEY --list-shortcuts
-  
-  # Process only a specific game
-  %(prog)s --api-key YOUR_KEY --game-name "Spider-Man"
-        """
-    )
-    parser.add_argument(
-        "--api-key",
-        required=True,
-        help="SteamGridDB API key (get from https://www.steamgriddb.com/profile/preferences/api)"
-    )
-    parser.add_argument(
-        "--steam-path",
-        type=Path,
-        help="Override Steam installation path"
-    )
-    parser.add_argument(
-        "--game-name",
-        help="Process only this specific game (case-insensitive partial match)"
-    )
-    parser.add_argument(
-        "--list-shortcuts",
-        action="store_true",
-        help="List all shortcuts and their IDs without downloading images"
-    )
+    parser = argparse.ArgumentParser(description="Set SteamGridDB artwork for Steam shortcuts")
+    parser.add_argument("--config", type=Path, default=Path.home() / ".config" / "steamgriddb" / "config.json",
+                        help="Config file path")
+    parser.add_argument("--api-key", help="SteamGridDB API key (overrides config)")
+    parser.add_argument("--steam-path", type=Path, help="Steam installation path (overrides config)")
+    parser.add_argument("--game", help="Process only this game (case-insensitive partial match)")
+    parser.add_argument("--list", action="store_true", help="List shortcuts without downloading")
+    parser.add_argument("--setup", action="store_true", help="Run configuration setup")
     
     args = parser.parse_args()
     
+    # Load/setup config
+    config = Config(args.config)
+    if args.setup or not config.get("api_key"):
+        config = setup_config(args.config)
+    
+    # Get API key
+    api_key = args.api_key or config.get("api_key")
+    if not api_key:
+        print("Error: No API key provided. Run with --setup or use --api-key")
+        return 1
+    
     # Initialize
     try:
-        sgdb = SteamGridDBAPI(args.api_key)
-        steam = SteamShortcutManager(args.steam_path)
+        steam_path = args.steam_path or (Path(config.get("steam_path")) if config.get("steam_path") else None)
+        sgdb = SteamGridDB(api_key)
+        steam = SteamManager(steam_path)
     except ValueError as e:
         print(f"Error: {e}")
         return 1
     
-    print(f"Steam path: {steam.steam_path}\n")
+    print(f"Steam: {steam.steam_path}\n")
     
-    # Process each user
-    user_dirs = steam.find_user_dirs()
+    # Process users
+    user_dirs = steam.get_user_dirs()
     if not user_dirs:
-        print("No Steam user directories found")
+        print("No Steam users found")
         return 1
     
-    total_processed = 0
+    image_types = config.get("image_types", {})
+    total = 0
     
     for user_dir in user_dirs:
-        print(f"Processing user: {user_dir.name}")
+        print(f"User: {user_dir.name}")
+        shortcuts = steam.get_shortcuts(user_dir)
         
-        # Get non-Steam games
-        games = steam.get_non_steam_games(user_dir)
-        if not games:
-            print("  No shortcuts found\n")
+        if not shortcuts:
+            print("  No shortcuts\n")
             continue
         
-        print(f"  Found {len(games)} shortcut(s)\n")
-        
+        print(f"  {len(shortcuts)} shortcut(s)\n")
         grid_path = user_dir / "config" / "grid"
         
-        for name, exe, app_id, grid_id in games:
-            # Filter by game name if specified
-            if args.game_name and args.game_name.lower() not in name.lower():
+        for name, exe, app_id in shortcuts:
+            if args.game and args.game.lower() not in name.lower():
                 continue
             
             print(f"  [{name}]")
             print(f"    App ID: {app_id}")
             
-            # If just listing, check for existing files
-            if args.list_shortcuts:
+            if args.list:
                 if grid_path.exists():
-                    matching_files = list(grid_path.glob(f"{app_id}*"))
-                    if matching_files:
-                        print(f"    Existing files:")
-                        for f in sorted(matching_files):
-                            print(f"      - {f.name}")
-                    else:
-                        print(f"    No existing grid files")
+                    files = sorted(grid_path.glob(f"{app_id}*"))
+                    if files:
+                        print(f"    Files: {', '.join(f.name for f in files)}")
                 print()
                 continue
             
-            # Search on SteamGridDB
-            print(f"    Searching SteamGridDB...")
-            game_id = sgdb.search_game(name)
+            # Search and download
+            print(f"    Searching...")
+            game_id = sgdb.search(name)
             if not game_id:
-                print(f"    ✗ Not found on SteamGridDB\n")
+                print(f"    ✗ Not found\n")
                 continue
             
-            print(f"    Found (SGDB ID: {game_id})")
+            count = 0
             
-            # Get artwork URLs
-            grid_url = sgdb.get_grid_image(game_id)
-            hero_url = sgdb.get_hero_image(game_id)
-            logo_url = sgdb.get_logo_image(game_id)
+            # Grid image (vertical/portrait)
+            if image_types.get("grid", True):
+                if url := sgdb.get_artwork(game_id, "grids"):
+                    file = grid_path / f"{app_id}p.png"
+                    if sgdb.download(url, file):
+                        print(f"    ✓ Grid")
+                        count += 1
             
-            if not grid_url:
-                print(f"    ✗ No artwork available\n")
-                continue
+            # Wide cover (horizontal capsule)
+            if image_types.get("wide", True):
+                if url := sgdb.get_artwork(game_id, "grids"):
+                    file = grid_path / f"{app_id}.png"
+                    if sgdb.download(url, file):
+                        print(f"    ✓ Wide")
+                        count += 1
             
-            # Download artwork
-            success_count = 0
+            # Hero image (background)
+            if image_types.get("hero", True):
+                if url := sgdb.get_artwork(game_id, "heroes"):
+                    file = grid_path / f"{app_id}_hero.png"
+                    if sgdb.download(url, file):
+                        print(f"    ✓ Hero")
+                        count += 1
             
-            # Grid image (library view)
-            if grid_url:
-                grid_file = grid_path / f"{app_id}p.png"
-                print(f"    Downloading grid → {grid_file.name}")
-                if sgdb.download_image(grid_url, grid_file):
-                    print(f"      ✓ Saved")
-                    success_count += 1
+            # Logo image (overlay)
+            if image_types.get("logo", True):
+                if url := sgdb.get_artwork(game_id, "logos"):
+                    file = grid_path / f"{app_id}_logo.png"
+                    if sgdb.download(url, file):
+                        print(f"    ✓ Logo")
+                        count += 1
             
-            # Hero image (big picture mode)
-            if hero_url:
-                hero_file = grid_path / f"{app_id}_hero.png"
-                print(f"    Downloading hero → {hero_file.name}")
-                if sgdb.download_image(hero_url, hero_file):
-                    print(f"      ✓ Saved")
-                    success_count += 1
-            
-            # Logo image (overlay on hero)
-            if logo_url:
-                logo_file = grid_path / f"{app_id}_logo.png"
-                print(f"    Downloading logo → {logo_file.name}")
-                if sgdb.download_image(logo_url, logo_file):
-                    print(f"      ✓ Saved")
-                    success_count += 1
-            
-            if success_count > 0:
-                print(f"    ✓ Complete ({success_count} image(s))")
-                total_processed += 1
-            
+            if count > 0:
+                total += 1
             print()
     
-    if not args.list_shortcuts:
-        if total_processed > 0:
-            print(f"✓ Successfully processed {total_processed} game(s)")
-            print("  Restart Steam to see the changes!")
-        else:
-            print("No games were processed")
+    if not args.list and total > 0:
+        print(f"✓ Processed {total} game(s). Restart Steam to see changes!")
     
     return 0
 
@@ -317,8 +299,7 @@ if __name__ == "__main__":
     try:
         import requests
     except ImportError:
-        print("Error: Missing required dependency 'requests'")
-        print("\nInstall with: pip install requests")
+        print("Error: Install required dependency with: pip install requests")
         sys.exit(1)
     
     sys.exit(main())
